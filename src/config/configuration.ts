@@ -6,4 +6,8 @@ export default () => ({
   redis: {
     url: process.env.REDIS_URL ?? 'redis://localhost:6379',
   },
+  agora: {
+    appId: process.env.AGORA_APP_ID,
+    appCertificate: process.env.AGORA_APP_CERT,
+  },
 });
