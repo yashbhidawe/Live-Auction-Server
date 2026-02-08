@@ -25,10 +25,36 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## Project structure
+
+```
+src/
+├── main.ts                 # Bootstrap, CORS, global config
+├── app.module.ts           # Root module
+├── app.controller.ts       # Root + health
+├── app.service.ts
+├── common/                 # Shared utilities, constants, decorators
+│   └── index.ts
+├── config/                 # App configuration (env, validation)
+│   ├── config.module.ts
+│   └── configuration.ts
+├── prisma/                 # Database access (global)
+│   ├── prisma.module.ts
+│   └── prisma.service.ts
+└── auction/                # Auction feature (REST, WebSocket, engine)
+    ├── auction.module.ts
+    ├── auction.controller.ts
+    ├── auction.service.ts
+    └── dto/
+```
+
+Add new features as modules under `src/` (e.g. `users/`, `bids/`) and register them in `app.module.ts`.
+
 ## Project setup
 
 ```bash
 $ npm install
+$ npx prisma generate   # after defining schema
 ```
 
 ## Compile and run the project

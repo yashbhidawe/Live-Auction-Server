@@ -56,3 +56,6 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
+
+# Bruno API collection (optional – remove this line to share the collection in git)
+/Live Auction
