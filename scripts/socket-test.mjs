@@ -27,25 +27,52 @@ async function main() {
   });
   socket.on('auction_state', (state) => console.log('[auction_state]', state));
   socket.on('bid_result', (result) => console.log('[bid_result]', result));
+  socket.on('item_sold', (data) => console.log('[item_sold]', data));
+  socket.on('auction_ended', (data) => console.log('[auction_ended]', data));
 
   socket.on('connect', async () => {
     try {
-      const res = await fetch(`${BASE}/auctions/start`, {
+      const createRes = await fetch(`${BASE}/auctions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startingPrice: 100 }),
+        body: JSON.stringify({
+          sellerId: 'test-seller',
+          items: [
+            { name: 'Item 1', startingPrice: 100 },
+            { name: 'Item 2', startingPrice: 50 },
+          ],
+        }),
       });
-      const startResult = await res.json();
-      console.log('[POST /auctions/start]', startResult);
+      const auction = await createRes.json();
+      const auctionId = auction.id;
+      console.log('[POST /auctions] created', auctionId);
 
-      socket.emit('place_bid', { userId: 'test-user', amount: 150 });
+      const startRes = await fetch(`${BASE}/auctions/${auctionId}/start`, {
+        method: 'POST',
+      });
+      if (!startRes.ok) throw new Error(await startRes.text());
+      console.log('[POST /auctions/:id/start] started');
+
+      socket.emit('join_auction', { auctionId });
+      setTimeout(() => {
+        socket.emit('place_bid', {
+          auctionId,
+          userId: 'test-user',
+          amount: 150,
+        });
+      }, 100);
       setTimeout(
-        () => socket.emit('place_bid', { userId: 'other-user', amount: 99 }),
-        200,
+        () =>
+          socket.emit('place_bid', {
+            auctionId,
+            userId: 'other-user',
+            amount: 99,
+          }),
+        300,
       );
       setTimeout(() => {
         console.log('Done. Disconnect with Ctrl+C.');
-      }, 500);
+      }, 1000);
     } catch (e) {
       console.error(e);
     }

@@ -1,63 +1,70 @@
 import { AuctionEngine } from './auction-engine';
 
+const createInput = () => ({
+  sellerId: 'seller-1',
+  items: [
+    { name: 'Item A', startingPrice: 100 },
+    { name: 'Item B', startingPrice: 50 },
+  ],
+});
+
 describe('AuctionEngine (isolated)', () => {
   let engine: AuctionEngine;
 
   beforeEach(() => {
-    engine = new AuctionEngine();
+    engine = new AuctionEngine('auction-1', createInput());
   });
 
-  describe('state machine', () => {
-    it('starts in CREATED', () => {
-      expect(engine.getState().status).toBe('CREATED');
+  describe('creation and state machine', () => {
+    it('starts in CREATED with items PENDING', () => {
+      const state = engine.getState();
+      expect(state.status).toBe('CREATED');
+      expect(state.id).toBe('auction-1');
+      expect(state.sellerId).toBe('seller-1');
+      expect(state.items).toHaveLength(2);
+      expect(state.items[0]?.status).toBe('PENDING');
+      expect(state.items[1]?.status).toBe('PENDING');
+      expect(state.currentItemIndex).toBe(0);
     });
 
-    it('startAuction() transitions CREATED → LIVE', () => {
-      const result = engine.startAuction(100);
+    it('startAuction() transitions CREATED → LIVE, first item LIVE', () => {
+      const result = engine.startAuction();
       expect(result).toEqual({ started: true });
-      expect(engine.getState().status).toBe('LIVE');
-      expect(engine.getState().startingPrice).toBe(100);
-      expect(engine.getState().highestBid).toBe(100);
+      const state = engine.getState();
+      expect(state.status).toBe('LIVE');
+      expect(state.items[0]?.status).toBe('LIVE');
+      expect(state.items[0]?.highestBid).toBe(100);
     });
 
     it('rejects startAuction when not CREATED', () => {
-      engine.startAuction(50);
-      expect(engine.startAuction(200)).toEqual({
+      engine.startAuction();
+      expect(engine.startAuction()).toEqual({
         started: false,
         reason: 'Auction cannot start from status LIVE',
       });
     });
 
-    it('endAuction() transitions LIVE → ENDED', () => {
-      engine.startAuction(100);
-      engine.placeBid('user1', 150);
-      const result = engine.endAuction();
-      expect(result).toEqual({
-        ended: true,
-        winnerId: 'user1',
-        finalPrice: 150,
-      });
-      expect(engine.getState().status).toBe('ENDED');
-    });
-
-    it('rejects endAuction when not LIVE', () => {
-      expect(engine.endAuction()).toEqual({
-        ended: false,
-        reason: 'Auction cannot end from status CREATED',
+    it('rejects startAuction when no items', () => {
+      const empty = new AuctionEngine('e1', { sellerId: 's', items: [] });
+      expect(empty.startAuction()).toEqual({
+        started: false,
+        reason: 'Auction has no items',
       });
     });
   });
 
   describe('placeBid', () => {
+    beforeEach(() => engine.startAuction());
+
     it('rejects when auction not LIVE', () => {
-      expect(engine.placeBid('user1', 100)).toEqual({
+      const eng = new AuctionEngine('x', createInput());
+      expect(eng.placeBid('user1', 100)).toEqual({
         accepted: false,
         reason: 'Auction is not live (status: CREATED)',
       });
     });
 
     it('rejects bid <= current highest', () => {
-      engine.startAuction(100);
       expect(engine.placeBid('user1', 99)).toEqual({
         accepted: false,
         reason: 'Bid must be higher than current highest (100)',
@@ -69,44 +76,134 @@ describe('AuctionEngine (isolated)', () => {
     });
 
     it('accepts bid > current highest', () => {
-      engine.startAuction(100);
       expect(engine.placeBid('user1', 150)).toEqual({ accepted: true });
-      expect(engine.getState().highestBid).toBe(150);
-      expect(engine.getState().highestBidderId).toBe('user1');
+      const state = engine.getState();
+      expect(state.items[0]?.highestBid).toBe(150);
+      expect(state.items[0]?.highestBidderId).toBe('user1');
+    });
+  });
+
+  describe('endCurrentItem and advanceToNextItem', () => {
+    beforeEach(() => engine.startAuction());
+
+    it('endCurrentItem marks item SOLD when had bids', () => {
+      engine.placeBid('user1', 120);
+      const result = engine.endCurrentItem();
+      expect(result.ended).toBe(true);
+      expect(result.itemId).toBe('auction-1-item-0');
+      expect(result.winnerId).toBe('user1');
+      expect(result.finalPrice).toBe(120);
+      expect(result.hadBids).toBe(true);
+      const state = engine.getState();
+      expect(state.items[0]?.status).toBe('SOLD');
     });
 
-    it('deterministic: same state + same bid gives same result', () => {
-      engine.startAuction(100);
-      const r1 = engine.placeBid('alice', 150);
-      const engine2 = new AuctionEngine();
-      engine2.startAuction(100);
-      const r2 = engine2.placeBid('alice', 150);
-      expect(r1).toEqual(r2);
-      expect(r1).toEqual({ accepted: true });
+    it('endCurrentItem marks item UNSOLD when no bids above starting', () => {
+      const result = engine.endCurrentItem();
+      expect(result.ended).toBe(true);
+      expect(result.winnerId).toBe(null);
+      expect(result.hadBids).toBe(false);
+      const state = engine.getState();
+      expect(state.items[0]?.status).toBe('UNSOLD');
+    });
+
+    it('advanceToNextItem moves to next item and sets LIVE', () => {
+      engine.endCurrentItem();
+      const adv = engine.advanceToNextItem();
+      expect(adv).toEqual({ advanced: true, nextItemLive: true });
+      const state = engine.getState();
+      expect(state.currentItemIndex).toBe(1);
+      expect(state.items[1]?.status).toBe('LIVE');
+      expect(state.items[1]?.highestBid).toBe(50);
+    });
+
+    it('advanceToNextItem when no more items ends auction', () => {
+      engine.endCurrentItem();
+      engine.advanceToNextItem();
+      engine.endCurrentItem();
+      const adv = engine.advanceToNextItem();
+      expect(adv).toEqual({ advanced: true, nextItemLive: false });
+      expect(engine.getState().status).toBe('ENDED');
+    });
+  });
+
+  describe('extendCurrentItem', () => {
+    beforeEach(() => engine.startAuction());
+
+    it('extends once per item', () => {
+      expect(engine.extendCurrentItem()).toEqual({ extended: true });
+      expect(engine.extendCurrentItem()).toEqual({
+        extended: false,
+        reason: 'Item already extended',
+      });
+    });
+
+    it('rejects when not LIVE', () => {
+      const eng = new AuctionEngine('x', createInput());
+      expect(eng.extendCurrentItem()).toEqual({
+        extended: false,
+        reason: 'Auction is not live (status: CREATED)',
+      });
+    });
+  });
+
+  describe('endAuction', () => {
+    it('returns results for all items when called in LIVE', () => {
+      engine.startAuction();
+      engine.placeBid('user1', 110);
+      engine.endCurrentItem();
+      engine.advanceToNextItem();
+      const result = engine.endAuction();
+      expect(result.ended).toBe(true);
+      expect(result.results).toHaveLength(2);
+    });
+
+    it('idempotent when already ENDED', () => {
+      engine.startAuction();
+      engine.endAuction();
+      const result = engine.endAuction();
+      expect(result.ended).toBe(true);
+      expect(result.results).toBeDefined();
+    });
+  });
+
+  describe('full lifecycle', () => {
+    it('create → start → bid → end item → advance → end item → advance → ENDED', () => {
+      expect(engine.getState().status).toBe('CREATED');
+      engine.startAuction();
+      expect(engine.getState().status).toBe('LIVE');
+      engine.placeBid('alice', 150);
+      const end1 = engine.endCurrentItem();
+      expect(end1.ended).toBe(true);
+      expect(end1.winnerId).toBe('alice');
+      engine.advanceToNextItem();
+      engine.placeBid('bob', 60);
+      engine.endCurrentItem();
+      const adv = engine.advanceToNextItem();
+      expect(adv.nextItemLive).toBe(false);
+      expect(engine.getState().status).toBe('ENDED');
     });
   });
 
   describe('getState idempotent', () => {
     it('returns copy so caller cannot mutate internal state', () => {
-      engine.startAuction(100);
+      engine.startAuction();
       const a = engine.getState();
       const b = engine.getState();
       expect(a).toEqual(b);
-      (a as { highestBid: number }).highestBid = 999;
-      expect(engine.getState().highestBid).toBe(100);
+      (a.items[0] as { highestBid: number }).highestBid = 999;
+      expect(engine.getState().items[0]?.highestBid).toBe(100);
     });
   });
 
   describe('setState (replaceable storage)', () => {
     it('restores state from external storage', () => {
-      engine.setState({
-        status: 'LIVE',
-        startingPrice: 50,
-        highestBid: 75,
-        highestBidderId: 'bob',
-      });
-      expect(engine.getState().highestBidderId).toBe('bob');
-      expect(engine.placeBid('alice', 100)).toEqual({ accepted: true });
+      engine.startAuction();
+      const state = engine.getState();
+      const engine2 = new AuctionEngine('auction-1', createInput());
+      engine2.setState(state);
+      expect(engine2.placeBid('alice', 200)).toEqual({ accepted: true });
+      expect(engine2.getState().items[0]?.highestBid).toBe(200);
     });
   });
 });
