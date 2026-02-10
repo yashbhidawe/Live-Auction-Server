@@ -12,6 +12,7 @@ export interface AuctionSummary {
   sellerId: string;
   status: string;
   createdAt: Date;
+  sellerName: string;
 }
 
 @Injectable()
@@ -225,10 +226,16 @@ export class AuctionPersistenceService {
     return this.toEngineState(auction);
   }
 
-  /** List all auctions (lightweight) */
+  /** List all auctions (lightweight, includes seller display name) */
   async listAuctions(): Promise<AuctionSummary[]> {
     const auctions = await this.prisma.auction.findMany({
-      select: { id: true, sellerId: true, status: true, createdAt: true },
+      select: {
+        id: true,
+        sellerId: true,
+        status: true,
+        createdAt: true,
+        seller: { select: { displayName: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return auctions.map((a) => ({
@@ -236,6 +243,7 @@ export class AuctionPersistenceService {
       sellerId: a.sellerId,
       status: a.status,
       createdAt: a.createdAt,
+      sellerName: a.seller.displayName,
     }));
   }
 

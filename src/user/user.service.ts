@@ -6,6 +6,12 @@ export class UserService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(displayName: string) {
+    // If user with this name already exists, return them (idempotent register)
+    const existing = await this.prisma.user.findUnique({
+      where: { displayName },
+    });
+    if (existing) return existing;
+
     return this.prisma.user.create({
       data: { displayName },
     });

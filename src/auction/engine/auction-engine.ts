@@ -15,8 +15,8 @@ const DEFAULT_ITEM_DURATION_SEC = 60;
 const DEFAULT_EXTRA_DURATION_SEC = 15;
 const DEFAULT_MAX_AUCTION_DURATION_SEC = 300;
 
-function generateItemId(auctionId: string, index: number): string {
-  return `${auctionId}-item-${index}`;
+function generateItemId(_auctionId: string, _index: number): string {
+  return crypto.randomUUID();
 }
 
 /**
