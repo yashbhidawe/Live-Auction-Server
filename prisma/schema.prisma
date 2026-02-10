@@ -11,3 +11,97 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum AuctionStatus {
+  CREATED
+  LIVE
+  ENDED
+}
+
+enum ItemStatus {
+  PENDING
+  LIVE
+  SOLD
+  UNSOLD
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  displayName String   @unique @db.VarChar(64)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  auctionsAsSeller Auction[]     @relation("AuctionSeller")
+  bids             Bid[]
+  auctionItems     AuctionItem[]
+  itemResults      ItemResult[]
+}
+
+model Auction {
+  id               String        @id @default(uuid()) @db.Uuid
+  status           AuctionStatus @default(CREATED)
+  currentItemIndex Int           @default(0)
+  maxDurationSec   Int           @default(300)
+  createdAt        DateTime      @default(now())
+  startedAt        DateTime?
+  endedAt          DateTime?
+
+  sellerId String @db.Uuid
+  seller   User   @relation("AuctionSeller", fields: [sellerId], references: [id], onDelete: Restrict)
+
+  items AuctionItem[]
+  bids  Bid[]
+
+  @@index([status, createdAt])
+}
+
+model AuctionItem {
+  id               String     @id @default(uuid()) @db.Uuid
+  auctionId        String     @db.Uuid
+  itemOrder        Int
+  name             String     @db.VarChar(128)
+  startingPrice    Int
+  durationSec      Int        @default(60)
+  extraDurationSec Int        @default(15)
+  status           ItemStatus @default(PENDING)
+  highestBid       Int        @default(0)
+  extended         Boolean    @default(false)
+  createdAt        DateTime   @default(now())
+  soldAt           DateTime?
+
+  highestBidderId String? @db.Uuid
+  highestBidder   User?   @relation(fields: [highestBidderId], references: [id], onDelete: SetNull)
+
+  auction Auction     @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  bids    Bid[]
+  result  ItemResult?
+
+  @@unique([auctionId, itemOrder])
+  @@index([auctionId, itemOrder])
+}
+
+model Bid {
+  id        String   @id @default(uuid()) @db.Uuid
+  auctionId String   @db.Uuid
+  itemId    String   @db.Uuid
+  bidderId  String   @db.Uuid
+  amount    Int
+  createdAt DateTime @default(now())
+
+  auction Auction     @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  item    AuctionItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  bidder  User        @relation(fields: [bidderId], references: [id], onDelete: Restrict)
+
+  @@index([auctionId, itemId, createdAt(sort: Desc)])
+}
+
+model ItemResult {
+  id         String   @id @default(uuid()) @db.Uuid
+  itemId     String   @unique @db.Uuid
+  finalPrice Int
+  soldAt     DateTime @default(now())
+
+  winnerId String?     @db.Uuid
+  winner   User?       @relation(fields: [winnerId], references: [id], onDelete: SetNull)
+  item     AuctionItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+}

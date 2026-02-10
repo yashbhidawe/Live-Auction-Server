@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import { AuctionEngine } from './engine';
 import type {
@@ -6,6 +6,8 @@ import type {
   CreateAuctionInput,
   AdvanceToNextItemResult,
 } from './engine';
+import { RedisService } from '../redis/redis.service';
+import { AuctionPersistenceService } from './auction-persistence.service';
 
 const AUCTION_ROOM_PREFIX = 'auction:';
 
@@ -37,9 +39,64 @@ interface AuctionEntry {
 }
 
 @Injectable()
-export class AuctionService {
+export class AuctionService implements OnModuleInit {
   private readonly auctions = new Map<string, AuctionEntry>();
   private readonly eventEmitter = new EventEmitter();
+  private readonly logger = new Logger(AuctionService.name);
+
+  constructor(
+    private readonly redis: RedisService,
+    private readonly persistence: AuctionPersistenceService,
+  ) {}
+
+  /* ------------------------------------------------------------------ */
+  /*  RECOVERY: re-hydrate from DB on startup                           */
+  /* ------------------------------------------------------------------ */
+
+  async onModuleInit(): Promise<void> {
+    const activeAuctions = await this.persistence.loadActiveAuctions();
+    for (const state of activeAuctions) {
+      const engine = new AuctionEngine(state.id, {
+        sellerId: state.sellerId,
+        items: state.items,
+      });
+      engine.setState(state);
+
+      const entry: AuctionEntry = {
+        engine,
+        itemTimer: null,
+        itemEndTimeMs: null,
+      };
+      this.auctions.set(state.id, entry);
+
+      // If auction is LIVE, seed Redis for current item and schedule timer
+      if (state.status === 'LIVE') {
+        const currentItem = state.items[state.currentItemIndex];
+        if (currentItem && currentItem.status === 'LIVE') {
+          await this.redis.seedItem(
+            state.id,
+            currentItem.id,
+            currentItem.highestBid,
+          );
+          // If there was already a highest bidder, re-set it in Redis
+          if (currentItem.highestBidderId) {
+            await this.redis.atomicBidCheck(
+              state.id,
+              currentItem.id,
+              currentItem.highestBid,
+              currentItem.highestBidderId,
+            );
+          }
+          this.scheduleItemExpiry(state.id);
+        }
+      }
+    }
+    this.logger.log(`Recovered ${activeAuctions.length} auction(s) from DB`);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  PUBLIC API                                                         */
+  /* ------------------------------------------------------------------ */
 
   getEventEmitter(): EventEmitter {
     return this.eventEmitter;
@@ -49,68 +106,189 @@ export class AuctionService {
     return `${AUCTION_ROOM_PREFIX}${auctionId}`;
   }
 
-  createAuction(input: CreateAuctionInput): AuctionState {
+  /** Create auction: validate seller, create engine, persist to DB */
+  async createAuction(
+    input: CreateAuctionInput,
+  ): Promise<AuctionState | { error: string }> {
+    // Validate seller exists
+    const sellerExists = await this.persistence.validateSellerExists(
+      input.sellerId,
+    );
+    if (!sellerExists) {
+      return { error: 'Seller not found. Create a user first.' };
+    }
+
     const id = crypto.randomUUID();
     const engine = new AuctionEngine(id, input);
+    const state = engine.getState() as AuctionState;
+
+    // Persist to DB (source of truth)
+    await this.persistence.persistAuction(state);
+
+    // Cache in memory
     this.auctions.set(id, { engine, itemTimer: null, itemEndTimeMs: null });
-    return engine.getState() as AuctionState;
+
+    return state;
   }
 
-  listAuctions(): Array<{ id: string; sellerId: string; status: string }> {
-    return Array.from(this.auctions.entries()).map(([id, { engine }]) => {
-      const s = engine.getState();
-      return { id, sellerId: s.sellerId, status: s.status };
-    });
+  /** List all auctions from DB (includes ended) */
+  async listAuctions(): Promise<
+    Array<{ id: string; sellerId: string; status: string }>
+  > {
+    return this.persistence.listAuctions();
   }
 
-  getState(auctionId: string): AuctionState | null {
+  /** Get state: in-memory first, fallback to DB for ended auctions */
+  async getState(
+    auctionId: string,
+  ): Promise<(AuctionState & { itemEndTime?: number }) | null> {
     const entry = this.auctions.get(auctionId);
-    if (!entry) return null;
-    const state = entry.engine.getState() as AuctionState;
-    const withEndTime = { ...state } as AuctionState & { itemEndTime?: number };
-    if (entry.itemEndTimeMs != null) {
-      withEndTime.itemEndTime = entry.itemEndTimeMs;
+    if (entry) {
+      const state = entry.engine.getState() as AuctionState;
+      const withEndTime = { ...state } as AuctionState & {
+        itemEndTime?: number;
+      };
+      if (entry.itemEndTimeMs != null) {
+        withEndTime.itemEndTime = entry.itemEndTimeMs;
+      }
+      return withEndTime;
     }
-    return withEndTime as AuctionState;
+
+    // Fallback to DB for ended/historical auctions
+    return this.persistence.loadAuction(auctionId);
   }
 
-  startAuction(auctionId: string): { started: boolean; reason?: string } {
+  /** Start auction: engine transition, seed Redis, persist, schedule timer */
+  async startAuction(
+    auctionId: string,
+  ): Promise<{ started: boolean; reason?: string }> {
     const entry = this.auctions.get(auctionId);
     if (!entry) return { started: false, reason: 'Auction not found' };
+
     const result = entry.engine.startAuction();
     if (!result.started) return result;
+
+    const state = entry.engine.getState() as AuctionState;
+    const firstItem = state.items[0];
+
+    // Seed Redis for first item
+    if (firstItem) {
+      await this.redis.seedItem(
+        auctionId,
+        firstItem.id,
+        firstItem.startingPrice,
+      );
+    }
+
+    // Persist status change to DB
+    await this.persistence.persistAuctionStatus(auctionId, 'LIVE', {
+      startedAt: new Date(),
+    });
+    if (firstItem) {
+      await this.persistence.persistItemStatus(firstItem.id, 'LIVE');
+    }
+
     this.scheduleItemExpiry(auctionId);
     this.emitState(auctionId);
     return result;
   }
 
-  placeBid(
+  /**
+   * Place bid: engine validates, Redis atomic check, persist to DB.
+   * Redis is the arbiter for concurrent bids. Engine is updated after Redis accepts.
+   */
+  async placeBid(
     auctionId: string,
     userId: string,
     amount: number,
-  ): { accepted: boolean; reason?: string } {
+  ): Promise<{ accepted: boolean; reason?: string }> {
     const entry = this.auctions.get(auctionId);
     if (!entry) return { accepted: false, reason: 'Auction not found' };
-    const result = entry.engine.placeBid(userId, amount);
-    if (result.accepted) this.emitState(auctionId);
-    return result;
+
+    // Engine validates business rules (auction LIVE, item LIVE, bid > current)
+    const state = entry.engine.getState() as AuctionState;
+    if (state.status !== 'LIVE') {
+      return {
+        accepted: false,
+        reason: `Auction is not live (status: ${state.status})`,
+      };
+    }
+    const currentItem = state.items[state.currentItemIndex];
+    if (!currentItem || currentItem.status !== 'LIVE') {
+      return { accepted: false, reason: 'No item currently being auctioned' };
+    }
+    if (amount <= currentItem.highestBid) {
+      return {
+        accepted: false,
+        reason: `Bid must be higher than current highest (${currentItem.highestBid})`,
+      };
+    }
+
+    // Redis atomic check-and-set (the real concurrency guard)
+    const accepted = await this.redis.atomicBidCheck(
+      auctionId,
+      currentItem.id,
+      amount,
+      userId,
+    );
+    if (!accepted) {
+      return {
+        accepted: false,
+        reason: 'Bid was outpaced by another bidder',
+      };
+    }
+
+    // Redis accepted → update in-memory engine
+    entry.engine.placeBid(userId, amount);
+
+    // Persist bid to DB (fire-and-forget, non-blocking)
+    this.persistence
+      .persistBid(auctionId, currentItem.id, userId, amount)
+      .catch((err) =>
+        this.logger.error(`Failed to persist bid: ${err.message}`, err.stack),
+      );
+
+    this.emitState(auctionId);
+    return { accepted: true };
   }
 
-  extendItem(
+  /** Extend current item timer */
+  async extendItem(
     auctionId: string,
     sellerId: string,
-  ): { extended: boolean; reason?: string } {
+  ): Promise<{ extended: boolean; reason?: string }> {
     const entry = this.auctions.get(auctionId);
     if (!entry) return { extended: false, reason: 'Auction not found' };
+
     const state = entry.engine.getState();
-    if (state.sellerId !== sellerId)
+    if (state.sellerId !== sellerId) {
       return { extended: false, reason: 'Not the seller' };
+    }
+
     const result = entry.engine.extendCurrentItem();
     if (!result.extended) return result;
+
+    // Persist extension to DB
+    const currentItem = state.items[state.currentItemIndex];
+    if (currentItem) {
+      this.persistence
+        .persistItemExtension(currentItem.id)
+        .catch((err) =>
+          this.logger.error(
+            `Failed to persist item extension: ${err.message}`,
+            err.stack,
+          ),
+        );
+    }
+
     this.scheduleItemExpiry(auctionId);
     this.emitState(auctionId);
     return result;
   }
+
+  /* ------------------------------------------------------------------ */
+  /*  TIMER LOGIC                                                        */
+  /* ------------------------------------------------------------------ */
 
   private scheduleItemExpiry(auctionId: string): void {
     const entry = this.auctions.get(auctionId);
@@ -135,7 +313,7 @@ export class AuctionService {
     );
   }
 
-  private onItemTimerExpired(auctionId: string): void {
+  private async onItemTimerExpired(auctionId: string): Promise<void> {
     const entry = this.auctions.get(auctionId);
     if (!entry) return;
     entry.itemTimer = null;
@@ -144,6 +322,24 @@ export class AuctionService {
     const endResult = entry.engine.endCurrentItem();
     if (!endResult.ended) return;
     const state = entry.engine.getState() as AuctionState;
+
+    // Persist item result to DB
+    await this.persistence
+      .persistItemResult(
+        endResult.itemId,
+        endResult.winnerId,
+        endResult.finalPrice,
+      )
+      .catch((err) =>
+        this.logger.error(
+          `Failed to persist item result: ${err.message}`,
+          err.stack,
+        ),
+      );
+
+    // Clear Redis keys for sold item
+    await this.redis.clearItem(auctionId, endResult.itemId);
+
     this.eventEmitter.emit('stateChange', {
       event: 'item_sold',
       auctionId,
@@ -161,6 +357,20 @@ export class AuctionService {
     if (stateAfter.status === 'ENDED') {
       const endAuctionResult = entry.engine.endAuction();
       if (endAuctionResult.ended) {
+        // Persist auction end to DB
+        await this.persistence
+          .persistAuctionEnd(auctionId, endAuctionResult.results)
+          .catch((err) =>
+            this.logger.error(
+              `Failed to persist auction end: ${err.message}`,
+              err.stack,
+            ),
+          );
+
+        // Clear all Redis keys for this auction
+        const itemIds = stateAfter.items.map((i) => i.id);
+        await this.redis.clearAuction(auctionId, itemIds);
+
         this.eventEmitter.emit('stateChange', {
           event: 'auction_ended',
           auctionId,
@@ -168,23 +378,55 @@ export class AuctionService {
           state: stateAfter,
         } satisfies AuctionStateChangeEvent);
       }
+      // Remove from in-memory map (DB is source of truth for ended auctions)
       this.auctions.delete(auctionId);
       return;
+    }
+
+    // Next item: seed Redis, persist, schedule timer
+    const nextItem = stateAfter.items[stateAfter.currentItemIndex];
+    if (nextItem) {
+      await this.redis.seedItem(auctionId, nextItem.id, nextItem.startingPrice);
+      await this.persistence
+        .persistItemStatus(nextItem.id, 'LIVE')
+        .catch((err) =>
+          this.logger.error(
+            `Failed to persist next item status: ${err.message}`,
+            err.stack,
+          ),
+        );
+      await this.persistence
+        .persistCurrentItemIndex(auctionId, stateAfter.currentItemIndex)
+        .catch((err) =>
+          this.logger.error(
+            `Failed to persist currentItemIndex: ${err.message}`,
+            err.stack,
+          ),
+        );
     }
 
     this.scheduleItemExpiry(auctionId);
     this.emitState(auctionId);
   }
 
+  /* ------------------------------------------------------------------ */
+  /*  INTERNAL                                                           */
+  /* ------------------------------------------------------------------ */
+
   private emitState(auctionId: string): void {
     const entry = this.auctions.get(auctionId);
     if (!entry) return;
-    const state = this.getState(auctionId);
-    if (state)
-      this.eventEmitter.emit('stateChange', {
-        event: 'auction_state',
-        auctionId,
-        state,
-      } satisfies AuctionStateChangeEvent);
+    const state = entry.engine.getState() as AuctionState;
+    const withEndTime = { ...state } as AuctionState & {
+      itemEndTime?: number;
+    };
+    if (entry.itemEndTimeMs != null) {
+      withEndTime.itemEndTime = entry.itemEndTimeMs;
+    }
+    this.eventEmitter.emit('stateChange', {
+      event: 'auction_state',
+      auctionId,
+      state: withEndTime,
+    } satisfies AuctionStateChangeEvent);
   }
 }

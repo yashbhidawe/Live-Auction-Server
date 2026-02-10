@@ -9,7 +9,9 @@ export class PrismaService
   implements OnModuleInit, OnModuleDestroy
 {
   constructor(config: ConfigService) {
+    // Use the direct TCP URL for the pg adapter (not the prisma+postgres proxy URL)
     const url =
+      config.get<string>('database.directUrl') ??
       config.get<string>('database.url') ??
       'postgresql://localhost:5432/auction';
     super({ adapter: new PrismaPg({ connectionString: url }) });

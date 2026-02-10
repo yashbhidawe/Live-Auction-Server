@@ -15,7 +15,7 @@ export class AuctionController {
   constructor(private readonly auctionService: AuctionService) {}
 
   @Post()
-  create(
+  async create(
     @Body()
     body: {
       sellerId: string;
@@ -26,39 +26,42 @@ export class AuctionController {
       }>;
     },
   ) {
-    const state = this.auctionService.createAuction({
+    const result = await this.auctionService.createAuction({
       sellerId: body.sellerId,
       items: body.items ?? [],
     });
-    return state;
+    if ('error' in result) {
+      throw new BadRequestException(result.error);
+    }
+    return result;
   }
 
   @Get()
-  list() {
+  async list() {
     return this.auctionService.listAuctions();
   }
 
   @Get(':id')
-  getState(@Param('id', ParseUUIDPipe) id: string) {
-    const state = this.auctionService.getState(id);
+  async getState(@Param('id', ParseUUIDPipe) id: string) {
+    const state = await this.auctionService.getState(id);
     if (!state) throw new NotFoundException('Auction not found');
     return state;
   }
 
   @Post(':id/start')
-  start(@Param('id', ParseUUIDPipe) id: string) {
-    const result = this.auctionService.startAuction(id);
+  async start(@Param('id', ParseUUIDPipe) id: string) {
+    const result = await this.auctionService.startAuction(id);
     if (!result.started)
       throw new BadRequestException(result.reason ?? 'Failed to start');
     return this.auctionService.getState(id);
   }
 
   @Post(':id/extend')
-  extend(
+  async extend(
     @Param('id', ParseUUIDPipe) id: string,
     @Body('sellerId') sellerId: string,
   ) {
-    const result = this.auctionService.extendItem(id, sellerId ?? '');
+    const result = await this.auctionService.extendItem(id, sellerId ?? '');
     if (!result.extended)
       throw new BadRequestException(result.reason ?? 'Failed to extend');
     return this.auctionService.getState(id);

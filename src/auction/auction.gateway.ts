@@ -42,14 +42,14 @@ export class AuctionGateway implements OnModuleInit {
   }
 
   @SubscribeMessage('join_auction')
-  handleJoinAuction(
+  async handleJoinAuction(
     client: {
       id: string;
       join: (room: string) => void;
       emit: (event: string, payload: unknown) => void;
     },
     payload: { auctionId: string },
-  ): void {
+  ): Promise<void> {
     const { auctionId } = payload ?? {};
     if (!auctionId) {
       client.emit('error', { message: 'auctionId required' });
@@ -57,7 +57,7 @@ export class AuctionGateway implements OnModuleInit {
     }
     const room = this.auctionService.getRoomName(auctionId);
     client.join(room);
-    const state = this.auctionService.getState(auctionId);
+    const state = await this.auctionService.getState(auctionId);
     client.emit('auction_state', state ?? { error: 'Auction not found' });
   }
 
@@ -71,10 +71,10 @@ export class AuctionGateway implements OnModuleInit {
   }
 
   @SubscribeMessage('place_bid')
-  handlePlaceBid(
+  async handlePlaceBid(
     client: { emit: (event: string, payload: unknown) => void },
     payload: { auctionId: string; userId: string; amount: number },
-  ): void {
+  ): Promise<void> {
     const { auctionId, userId, amount } = payload ?? {};
     if (!auctionId || userId == null || amount == null) {
       client.emit('bid_result', {
@@ -83,7 +83,11 @@ export class AuctionGateway implements OnModuleInit {
       });
       return;
     }
-    const result = this.auctionService.placeBid(auctionId, userId, amount);
+    const result = await this.auctionService.placeBid(
+      auctionId,
+      userId,
+      amount,
+    );
     client.emit('bid_result', result);
   }
 }

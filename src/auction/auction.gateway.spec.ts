@@ -5,7 +5,7 @@ import { AuctionService } from './auction.service';
 describe('AuctionGateway', () => {
   let gateway: AuctionGateway;
   let auctionService: AuctionService;
-  let mockServer: { to: jest.Mock };
+  let mockServer: { to: jest.Mock; emit: jest.Mock };
 
   beforeEach(async () => {
     const toMock = jest.fn().mockReturnThis();
@@ -19,9 +19,9 @@ describe('AuctionGateway', () => {
             getRoomName: jest.fn((id: string) => `auction:${id}`),
             getState: jest
               .fn()
-              .mockReturnValue({ id: 'a1', status: 'LIVE', items: [] }),
+              .mockResolvedValue({ id: 'a1', status: 'LIVE', items: [] }),
             getEventEmitter: jest.fn().mockReturnValue({ on: jest.fn() }),
-            placeBid: jest.fn().mockReturnValue({ accepted: true }),
+            placeBid: jest.fn().mockResolvedValue({ accepted: true }),
           },
         },
       ],
@@ -34,18 +34,20 @@ describe('AuctionGateway', () => {
   });
 
   describe('handleJoinAuction', () => {
-    it('joins room and emits auction_state to client', () => {
+    it('joins room and emits auction_state to client', async () => {
       const state = { id: 'a1', status: 'LIVE', items: [] };
-      jest.mocked(auctionService.getState).mockReturnValue(state);
+      jest.mocked(auctionService.getState).mockResolvedValue(state as never);
       const client = { join: jest.fn(), emit: jest.fn() };
-      gateway.handleJoinAuction(client as never, { auctionId: 'a1' });
+      await gateway.handleJoinAuction(client as never, { auctionId: 'a1' });
       expect(client.join).toHaveBeenCalledWith('auction:a1');
       expect(client.emit).toHaveBeenCalledWith('auction_state', state);
     });
 
-    it('emits error when auctionId missing', () => {
+    it('emits error when auctionId missing', async () => {
       const client = { join: jest.fn(), emit: jest.fn() };
-      gateway.handleJoinAuction(client as never, {});
+      await gateway.handleJoinAuction(client as never, {
+        auctionId: '',
+      });
       expect(client.emit).toHaveBeenCalledWith('error', {
         message: 'auctionId required',
       });
@@ -61,10 +63,12 @@ describe('AuctionGateway', () => {
   });
 
   describe('handlePlaceBid', () => {
-    it('calls service.placeBid with auctionId, userId, amount and emits bid_result', () => {
-      jest.mocked(auctionService.placeBid).mockReturnValue({ accepted: true });
+    it('calls service.placeBid with auctionId, userId, amount and emits bid_result', async () => {
+      jest
+        .mocked(auctionService.placeBid)
+        .mockResolvedValue({ accepted: true });
       const client = { emit: jest.fn() };
-      gateway.handlePlaceBid(client as never, {
+      await gateway.handlePlaceBid(client as never, {
         auctionId: 'a1',
         userId: 'u1',
         amount: 150,
@@ -75,9 +79,9 @@ describe('AuctionGateway', () => {
       });
     });
 
-    it('emits bid_result with error when payload incomplete', () => {
+    it('emits bid_result with error when payload incomplete', async () => {
       const client = { emit: jest.fn() };
-      gateway.handlePlaceBid(client as never, {});
+      await gateway.handlePlaceBid(client as never, {} as never);
       expect(client.emit).toHaveBeenCalledWith('bid_result', {
         accepted: false,
         reason: 'auctionId, userId, amount required',
