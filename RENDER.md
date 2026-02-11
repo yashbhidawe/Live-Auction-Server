@@ -60,13 +60,14 @@ This app uses **ioredis**, which needs a **Redis TCP URL**, not the REST API.
 
 Open your **Web Service** (the Node one) → **Environment** tab and add:
 
-| Key              | Value                                         | Notes                                                       |
-| ---------------- | --------------------------------------------- | ----------------------------------------------------------- |
-| `DATABASE_URL`   | _(paste Internal Database URL from Postgres)_ | Required                                                    |
-| `REDIS_URL`      | _(paste Internal Redis URL from Redis)_       | Required                                                    |
-| `CORS_ORIGIN`    | `https://your-client-domain.vercel.app`       | Your Expo web or client URL; use `*` only for quick testing |
-| `AGORA_APP_ID`   | _(your Agora app ID)_                         | Optional                                                    |
-| `AGORA_APP_CERT` | _(your Agora cert)_                           | Optional                                                    |
+| Key                | Value                                         | Notes                                                       |
+| ------------------ | --------------------------------------------- | ----------------------------------------------------------- |
+| `DATABASE_URL`     | _(paste Internal Database URL from Postgres)_ | Required                                                    |
+| `REDIS_URL`        | _(paste Internal Redis URL from Redis)_       | Required                                                    |
+| `CORS_ORIGIN`      | `https://your-client-domain.vercel.app`       | Your Expo web or client URL; use `*` only for quick testing |
+| `AGORA_APP_ID`     | _(your Agora app ID)_                         | Optional                                                    |
+| `AGORA_APP_CERT`   | _(your Agora cert)_                           | Optional                                                    |
+| `CLERK_SECRET_KEY` | _(from Clerk Dashboard → API Keys)_           | Required for Clerk auth; needed for `/users/sync`           |
 
 - Render sets **`PORT`** for you; the app already uses `process.env.PORT`.
 - Do **not** commit real URLs or secrets to Git; set them only in Render.

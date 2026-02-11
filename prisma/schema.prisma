@@ -27,6 +27,7 @@ enum ItemStatus {
 
 model User {
   id          String   @id @default(uuid()) @db.Uuid
+  clerkId     String?  @unique @db.VarChar(128) // Clerk user ID; null for legacy displayName-only users
   displayName String   @unique @db.VarChar(64)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

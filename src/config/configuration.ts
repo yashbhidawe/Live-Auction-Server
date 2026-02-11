@@ -11,4 +11,7 @@ export default () => ({
     appId: process.env.AGORA_APP_ID,
     appCertificate: process.env.AGORA_APP_CERT,
   },
+  clerk: {
+    secretKey: process.env.CLERK_SECRET_KEY,
+  },
 });

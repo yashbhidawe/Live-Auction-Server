@@ -30,4 +30,27 @@ export class UserService {
     });
     return user !== null;
   }
+
+  /** Sync or create user from Clerk. Returns app user. */
+  async syncFromClerk(clerkId: string, displayName?: string) {
+    const existing = await this.prisma.user.findUnique({
+      where: { clerkId },
+    });
+    if (existing) return existing;
+
+    const name = displayName?.trim() || `User_${clerkId.slice(-8)}`;
+    let candidate = name;
+    let suffix = 0;
+    while (true) {
+      const taken = await this.prisma.user.findUnique({
+        where: { displayName: candidate },
+      });
+      if (!taken) break;
+      candidate = `${name}_${++suffix}`;
+    }
+
+    return this.prisma.user.create({
+      data: { clerkId, displayName: candidate },
+    });
+  }
 }
