@@ -116,21 +116,22 @@ export class AuctionPersistenceService {
     ]);
   }
 
-  /** Persist the result of an item sale */
+  /** Persist the result of an item sale (or UNSOLD when no winner). */
   async persistItemResult(
     itemId: string,
     winnerId: string | null,
     finalPrice: number,
   ): Promise<void> {
     const now = new Date();
+    const sold = winnerId != null;
     await this.prisma.$transaction([
       this.prisma.auctionItem.update({
         where: { id: itemId },
         data: {
-          status: winnerId ? 'SOLD' : 'UNSOLD',
+          status: sold ? 'SOLD' : 'UNSOLD',
           highestBid: finalPrice,
           highestBidderId: winnerId,
-          soldAt: now,
+          soldAt: sold ? now : null,
         },
       }),
       // Only create ItemResult if there's a winner

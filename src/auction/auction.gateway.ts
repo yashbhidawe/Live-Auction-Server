@@ -64,7 +64,8 @@ export class AuctionGateway implements OnModuleInit {
       const verification = await verifyToken(token, { secretKey });
       if (verification.errors) {
         client.emit('auth_error', {
-          message: verification.errors[0]?.message ?? 'Token verification failed',
+          message:
+            verification.errors[0]?.message ?? 'Token verification failed',
         });
         client.disconnect(true);
         return;
@@ -87,7 +88,9 @@ export class AuctionGateway implements OnModuleInit {
         userId: user.id,
         displayName: user.displayName,
       });
-      this.logger.debug(`Socket authenticated id=${client.id} clerk=${clerkId}`);
+      this.logger.debug(
+        `Socket authenticated id=${client.id} clerk=${clerkId}`,
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.logger.warn(`Socket auth failed: ${msg}`);
@@ -135,6 +138,7 @@ export class AuctionGateway implements OnModuleInit {
             itemId: data.itemId,
             winnerId: data.winnerId,
             finalPrice: data.finalPrice,
+            sold: data.sold,
           });
           this.server.to(room).emit('auction_state', data.state);
         } else if (data.event === 'auction_ended') {
@@ -170,10 +174,7 @@ export class AuctionGateway implements OnModuleInit {
   }
 
   @SubscribeMessage('leave_auction')
-  handleLeaveAuction(
-    client: Socket,
-    payload: { auctionId: string },
-  ): void {
+  handleLeaveAuction(client: Socket, payload: { auctionId: string }): void {
     if (!this.requireSession(client)) return;
 
     const { auctionId } = payload ?? {};
@@ -206,10 +207,7 @@ export class AuctionGateway implements OnModuleInit {
   }
 
   @SubscribeMessage('send_comment')
-  handleSendComment(
-    client: Socket,
-    payload: SendCommentPayload,
-  ): void {
+  handleSendComment(client: Socket, payload: SendCommentPayload): void {
     const session = this.requireSession(client);
     if (!session) return;
 

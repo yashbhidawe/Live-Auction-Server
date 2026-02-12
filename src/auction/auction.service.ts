@@ -19,6 +19,7 @@ export type AuctionStateChangeEvent =
       itemId: string;
       winnerId: string | null;
       finalPrice: number;
+      sold: boolean;
       state: AuctionState;
     }
   | {
@@ -373,21 +374,21 @@ export class AuctionService implements OnModuleInit {
       if (!endResult.ended) return;
       const state = entry.engine.getState() as AuctionState;
 
-    // Persist item result to DB
-    await this.persistence
-      .persistItemResult(
-        endResult.itemId,
-        endResult.winnerId,
-        endResult.finalPrice,
-      )
-      .catch((err) =>
-        this.logger.error(
-          `Failed to persist item result: ${err.message}`,
-          err.stack,
-        ),
-      );
+      // Persist item result to DB
+      await this.persistence
+        .persistItemResult(
+          endResult.itemId,
+          endResult.winnerId,
+          endResult.finalPrice,
+        )
+        .catch((err) =>
+          this.logger.error(
+            `Failed to persist item result: ${err.message}`,
+            err.stack,
+          ),
+        );
 
-    // Clear Redis keys for sold item
+      // Clear Redis keys for sold item
       await this.redis.clearItem(auctionId, endResult.itemId);
 
       this.eventEmitter.emit('stateChange', {
@@ -396,6 +397,7 @@ export class AuctionService implements OnModuleInit {
         itemId: endResult.itemId,
         winnerId: endResult.winnerId,
         finalPrice: endResult.finalPrice,
+        sold: endResult.hadBids,
         state,
       } satisfies AuctionStateChangeEvent);
 
@@ -407,17 +409,17 @@ export class AuctionService implements OnModuleInit {
       if (stateAfter.status === 'ENDED') {
         const endAuctionResult = entry.engine.endAuction();
         if (endAuctionResult.ended) {
-        // Persist auction end to DB
-        await this.persistence
-          .persistAuctionEnd(auctionId, endAuctionResult.results)
-          .catch((err) =>
-            this.logger.error(
-              `Failed to persist auction end: ${err.message}`,
-              err.stack,
-            ),
-          );
+          // Persist auction end to DB
+          await this.persistence
+            .persistAuctionEnd(auctionId, endAuctionResult.results)
+            .catch((err) =>
+              this.logger.error(
+                `Failed to persist auction end: ${err.message}`,
+                err.stack,
+              ),
+            );
 
-        // Clear all Redis keys for this auction
+          // Clear all Redis keys for this auction
           const itemIds = stateAfter.items.map((i) => i.id);
           await this.redis.clearAuction(auctionId, itemIds);
 
