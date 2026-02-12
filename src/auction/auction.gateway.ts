@@ -10,10 +10,33 @@ import {
   type AuctionStateChangeEvent,
 } from './auction.service';
 
+interface ChatComment {
+  id: string;
+  auctionId: string;
+  userId: string;
+  displayName: string;
+  text: string;
+  createdAt: number;
+}
+
+interface SendCommentPayload {
+  auctionId: string;
+  userId: string;
+  displayName: string;
+  text: string;
+}
+
+const MAX_COMMENT_LENGTH = 180;
+const MAX_COMMENTS_PER_AUCTION = 100;
+const COMMENT_RATE_LIMIT_MS = 800;
+
 @WebSocketGateway({ cors: { origin: '*' } })
 export class AuctionGateway implements OnModuleInit {
   @WebSocketServer()
   server!: Server;
+
+  private readonly commentsByAuction = new Map<string, ChatComment[]>();
+  private readonly lastCommentAtByUser = new Map<string, number>();
 
   constructor(private readonly auctionService: AuctionService) {}
 
@@ -59,6 +82,10 @@ export class AuctionGateway implements OnModuleInit {
     client.join(room);
     const state = await this.auctionService.getState(auctionId);
     client.emit('auction_state', state ?? { error: 'Auction not found' });
+    client.emit(
+      'comments_snapshot',
+      this.commentsByAuction.get(auctionId) ?? [],
+    );
   }
 
   @SubscribeMessage('leave_auction')
@@ -89,5 +116,62 @@ export class AuctionGateway implements OnModuleInit {
       amount,
     );
     client.emit('bid_result', result);
+  }
+
+  @SubscribeMessage('send_comment')
+  handleSendComment(
+    client: { emit: (event: string, payload: unknown) => void },
+    payload: SendCommentPayload,
+  ): void {
+    const auctionId = payload?.auctionId?.trim();
+    const userId = payload?.userId?.trim();
+    const displayName = payload?.displayName?.trim();
+    const text = payload?.text?.trim();
+
+    if (!auctionId || !userId || !displayName || !text) {
+      client.emit('comment_rejected', {
+        reason: 'auctionId, userId, displayName, text required',
+      });
+      return;
+    }
+
+    if (text.length > MAX_COMMENT_LENGTH) {
+      client.emit('comment_rejected', {
+        reason: `Comment too long (${MAX_COMMENT_LENGTH} max)`,
+      });
+      return;
+    }
+
+    const userAuctionKey = `${auctionId}:${userId}`;
+    const now = Date.now();
+    const lastCommentAt = this.lastCommentAtByUser.get(userAuctionKey) ?? 0;
+
+    if (now - lastCommentAt < COMMENT_RATE_LIMIT_MS) {
+      client.emit('comment_rejected', {
+        reason: 'You are commenting too fast',
+      });
+      return;
+    }
+    this.lastCommentAtByUser.set(userAuctionKey, now);
+
+    const comment: ChatComment = {
+      id: `${now}-${Math.round(Math.random() * 1_000_000)}`,
+      auctionId,
+      userId,
+      displayName,
+      text,
+      createdAt: now,
+    };
+
+    const comments = this.commentsByAuction.get(auctionId) ?? [];
+    comments.push(comment);
+    if (comments.length > MAX_COMMENTS_PER_AUCTION) {
+      comments.splice(0, comments.length - MAX_COMMENTS_PER_AUCTION);
+    }
+    this.commentsByAuction.set(auctionId, comments);
+
+    this.server
+      .to(this.auctionService.getRoomName(auctionId))
+      .emit('comment_added', comment);
   }
 }
