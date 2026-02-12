@@ -46,6 +46,24 @@ export class RedisService implements OnModuleDestroy {
     return `auction:${auctionId}:item:${itemId}:highest_bidder`;
   }
 
+  private bidIdempotencyPendingKey(
+    auctionId: string,
+    itemId: string,
+    bidderId: string,
+    idempotencyKey: string,
+  ): string {
+    return `auction:${auctionId}:item:${itemId}:bidder:${bidderId}:idem:${idempotencyKey}:pending`;
+  }
+
+  private bidIdempotencyResultKey(
+    auctionId: string,
+    itemId: string,
+    bidderId: string,
+    idempotencyKey: string,
+  ): string {
+    return `auction:${auctionId}:item:${itemId}:bidder:${bidderId}:idem:${idempotencyKey}:result`;
+  }
+
   /**
    * Atomically check if newBid > current highest bid.
    * If yes, sets the new bid + bidder and returns true.
@@ -66,6 +84,71 @@ export class RedisService implements OnModuleDestroy {
       bidderId,
     );
     return result === 1;
+  }
+
+  async claimBidIdempotency(
+    auctionId: string,
+    itemId: string,
+    bidderId: string,
+    idempotencyKey: string,
+    ttlSec = 30,
+  ): Promise<boolean> {
+    const result = await this.client.set(
+      this.bidIdempotencyPendingKey(
+        auctionId,
+        itemId,
+        bidderId,
+        idempotencyKey,
+      ),
+      '1',
+      'EX',
+      ttlSec,
+      'NX',
+    );
+    return result === 'OK';
+  }
+
+  async getBidIdempotencyResult(
+    auctionId: string,
+    itemId: string,
+    bidderId: string,
+    idempotencyKey: string,
+  ): Promise<{ accepted: boolean; reason?: string } | null> {
+    const raw = await this.client.get(
+      this.bidIdempotencyResultKey(auctionId, itemId, bidderId, idempotencyKey),
+    );
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as { accepted: boolean; reason?: string };
+    } catch {
+      return null;
+    }
+  }
+
+  async storeBidIdempotencyResult(
+    auctionId: string,
+    itemId: string,
+    bidderId: string,
+    idempotencyKey: string,
+    result: { accepted: boolean; reason?: string },
+    ttlSec = 600,
+  ): Promise<void> {
+    const pipeline = this.client.pipeline();
+    pipeline.set(
+      this.bidIdempotencyResultKey(auctionId, itemId, bidderId, idempotencyKey),
+      JSON.stringify(result),
+      'EX',
+      ttlSec,
+    );
+    pipeline.del(
+      this.bidIdempotencyPendingKey(
+        auctionId,
+        itemId,
+        bidderId,
+        idempotencyKey,
+      ),
+    );
+    await pipeline.exec();
   }
 
   /** Seed a fresh item into Redis (when item goes LIVE) */

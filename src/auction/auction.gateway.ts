@@ -23,8 +23,6 @@ interface ChatComment {
 
 interface SendCommentPayload {
   auctionId: string;
-  userId: string;
-  displayName: string;
   text: string;
 }
 
@@ -185,7 +183,7 @@ export class AuctionGateway implements OnModuleInit {
   @SubscribeMessage('place_bid')
   async handlePlaceBid(
     client: Socket,
-    payload: { auctionId: string; amount: number },
+    payload: { auctionId: string; amount: number; idempotencyKey?: string },
   ): Promise<void> {
     const session = this.requireSession(client);
     if (!session) return;
@@ -202,6 +200,7 @@ export class AuctionGateway implements OnModuleInit {
       auctionId,
       session.userId,
       amount,
+      payload?.idempotencyKey,
     );
     client.emit('bid_result', result);
   }

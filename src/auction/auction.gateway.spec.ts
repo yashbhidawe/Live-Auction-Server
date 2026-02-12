@@ -133,7 +133,12 @@ describe('AuctionGateway', () => {
         auctionId: 'a1',
         amount: 150,
       });
-      expect(auctionService.placeBid).toHaveBeenCalledWith('a1', 'u1', 150);
+      expect(auctionService.placeBid).toHaveBeenCalledWith(
+        'a1',
+        'u1',
+        150,
+        undefined,
+      );
       expect(client.emit).toHaveBeenCalledWith('bid_result', {
         accepted: true,
       });
