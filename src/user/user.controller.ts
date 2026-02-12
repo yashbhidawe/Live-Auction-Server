@@ -4,6 +4,7 @@ import {
   Get,
   Logger,
   Param,
+  Patch,
   ParseUUIDPipe,
   Post,
   UseGuards,
@@ -32,6 +33,25 @@ export class UserController {
     this.logger.log(`POST /users/sync clerkId=${clerkId} displayName=${displayName ?? '(none)'}`);
     const user = await this.userService.syncFromClerk(clerkId, displayName);
     this.logger.log(`Sync result: id=${user.id} name=${user.displayName}`);
+    return user;
+  }
+
+  @Patch('me')
+  @UseGuards(ClerkAuthGuard)
+  async updateMe(
+    @ClerkId() clerkId: string,
+    @Body('displayName') displayName?: string,
+  ) {
+    const trimmed = displayName?.trim();
+    if (!trimmed) {
+      return this.userService.syncFromClerk(clerkId);
+    }
+    this.logger.log(`PATCH /users/me clerkId=${clerkId} displayName=${trimmed}`);
+    const user = await this.userService.updateDisplayNameFromClerk(
+      clerkId,
+      trimmed,
+    );
+    this.logger.log(`Profile updated: id=${user.id} name=${user.displayName}`);
     return user;
   }
 

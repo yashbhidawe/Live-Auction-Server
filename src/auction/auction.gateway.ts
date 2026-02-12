@@ -3,12 +3,14 @@ import {
   WebSocketServer,
   SubscribeMessage,
 } from '@nestjs/websockets';
-import { OnModuleInit } from '@nestjs/common';
-import { Server } from 'socket.io';
+import { Logger, OnModuleInit } from '@nestjs/common';
+import { verifyToken } from '@clerk/backend';
+import { Server, Socket } from 'socket.io';
 import {
   AuctionService,
   type AuctionStateChangeEvent,
 } from './auction.service';
+import { UserService } from '../user/user.service';
 
 interface ChatComment {
   id: string;
@@ -30,15 +32,98 @@ const MAX_COMMENT_LENGTH = 180;
 const MAX_COMMENTS_PER_AUCTION = 100;
 const COMMENT_RATE_LIMIT_MS = 800;
 
+interface SocketSession {
+  clerkId: string;
+  userId: string;
+  displayName: string;
+}
+
 @WebSocketGateway({ cors: { origin: '*' } })
 export class AuctionGateway implements OnModuleInit {
   @WebSocketServer()
   server!: Server;
 
+  private readonly logger = new Logger(AuctionGateway.name);
   private readonly commentsByAuction = new Map<string, ChatComment[]>();
   private readonly lastCommentAtByUser = new Map<string, number>();
+  private readonly sessionBySocketId = new Map<string, SocketSession>();
 
-  constructor(private readonly auctionService: AuctionService) {}
+  constructor(
+    private readonly auctionService: AuctionService,
+    private readonly userService: UserService,
+  ) {}
+
+  async handleConnection(client: Socket): Promise<void> {
+    const token = this.extractToken(client);
+    const secretKey = process.env.CLERK_SECRET_KEY;
+    if (!token || !secretKey) {
+      client.emit('auth_error', { message: 'Authentication required' });
+      client.disconnect(true);
+      return;
+    }
+
+    try {
+      const verification = await verifyToken(token, { secretKey });
+      if (verification.errors) {
+        client.emit('auth_error', {
+          message: verification.errors[0]?.message ?? 'Token verification failed',
+        });
+        client.disconnect(true);
+        return;
+      }
+
+      const payload =
+        (verification as any).sub || (verification as any).userId
+          ? verification
+          : (verification as any).data;
+      const clerkId = (payload as any)?.sub || (payload as any)?.userId;
+      if (!clerkId) {
+        client.emit('auth_error', { message: 'Invalid token payload' });
+        client.disconnect(true);
+        return;
+      }
+
+      const user = await this.userService.syncFromClerk(clerkId);
+      this.sessionBySocketId.set(client.id, {
+        clerkId,
+        userId: user.id,
+        displayName: user.displayName,
+      });
+      this.logger.debug(`Socket authenticated id=${client.id} clerk=${clerkId}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Socket auth failed: ${msg}`);
+      client.emit('auth_error', { message: 'Authentication failed' });
+      client.disconnect(true);
+    }
+  }
+
+  handleDisconnect(client: Socket): void {
+    this.sessionBySocketId.delete(client.id);
+  }
+
+  private extractToken(client: Socket): string | null {
+    const authToken = client.handshake.auth?.token;
+    if (typeof authToken === 'string' && authToken.trim()) {
+      return authToken.trim();
+    }
+
+    const header = client.handshake.headers?.authorization;
+    const authHeader = Array.isArray(header) ? header[0] : header;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+    const token = authHeader.slice(7).trim();
+    return token || null;
+  }
+
+  private requireSession(client: Socket): SocketSession | null {
+    const session = this.sessionBySocketId.get(client.id) ?? null;
+    if (!session) {
+      client.emit('auth_error', { message: 'Authentication required' });
+      client.disconnect(true);
+      return null;
+    }
+    return session;
+  }
 
   onModuleInit(): void {
     this.auctionService
@@ -66,13 +151,11 @@ export class AuctionGateway implements OnModuleInit {
 
   @SubscribeMessage('join_auction')
   async handleJoinAuction(
-    client: {
-      id: string;
-      join: (room: string) => void;
-      emit: (event: string, payload: unknown) => void;
-    },
+    client: Socket,
     payload: { auctionId: string },
   ): Promise<void> {
+    if (!this.requireSession(client)) return;
+
     const { auctionId } = payload ?? {};
     if (!auctionId) {
       client.emit('error', { message: 'auctionId required' });
@@ -90,29 +173,34 @@ export class AuctionGateway implements OnModuleInit {
 
   @SubscribeMessage('leave_auction')
   handleLeaveAuction(
-    client: { leave: (room: string) => void },
+    client: Socket,
     payload: { auctionId: string },
   ): void {
+    if (!this.requireSession(client)) return;
+
     const { auctionId } = payload ?? {};
     if (auctionId) client.leave(this.auctionService.getRoomName(auctionId));
   }
 
   @SubscribeMessage('place_bid')
   async handlePlaceBid(
-    client: { emit: (event: string, payload: unknown) => void },
-    payload: { auctionId: string; userId: string; amount: number },
+    client: Socket,
+    payload: { auctionId: string; amount: number },
   ): Promise<void> {
-    const { auctionId, userId, amount } = payload ?? {};
-    if (!auctionId || userId == null || amount == null) {
+    const session = this.requireSession(client);
+    if (!session) return;
+
+    const { auctionId, amount } = payload ?? {};
+    if (!auctionId || amount == null) {
       client.emit('bid_result', {
         accepted: false,
-        reason: 'auctionId, userId, amount required',
+        reason: 'auctionId, amount required',
       });
       return;
     }
     const result = await this.auctionService.placeBid(
       auctionId,
-      userId,
+      session.userId,
       amount,
     );
     client.emit('bid_result', result);
@@ -120,17 +208,18 @@ export class AuctionGateway implements OnModuleInit {
 
   @SubscribeMessage('send_comment')
   handleSendComment(
-    client: { emit: (event: string, payload: unknown) => void },
+    client: Socket,
     payload: SendCommentPayload,
   ): void {
+    const session = this.requireSession(client);
+    if (!session) return;
+
     const auctionId = payload?.auctionId?.trim();
-    const userId = payload?.userId?.trim();
-    const displayName = payload?.displayName?.trim();
     const text = payload?.text?.trim();
 
-    if (!auctionId || !userId || !displayName || !text) {
+    if (!auctionId || !text) {
       client.emit('comment_rejected', {
-        reason: 'auctionId, userId, displayName, text required',
+        reason: 'auctionId, text required',
       });
       return;
     }
@@ -142,7 +231,7 @@ export class AuctionGateway implements OnModuleInit {
       return;
     }
 
-    const userAuctionKey = `${auctionId}:${userId}`;
+    const userAuctionKey = `${auctionId}:${session.userId}`;
     const now = Date.now();
     const lastCommentAt = this.lastCommentAtByUser.get(userAuctionKey) ?? 0;
 
@@ -157,8 +246,8 @@ export class AuctionGateway implements OnModuleInit {
     const comment: ChatComment = {
       id: `${now}-${Math.round(Math.random() * 1_000_000)}`,
       auctionId,
-      userId,
-      displayName,
+      userId: session.userId,
+      displayName: session.displayName,
       text,
       createdAt: now,
     };

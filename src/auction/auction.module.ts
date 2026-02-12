@@ -3,8 +3,10 @@ import { AuctionController } from './auction.controller';
 import { AuctionGateway } from './auction.gateway';
 import { AuctionService } from './auction.service';
 import { AuctionPersistenceService } from './auction-persistence.service';
+import { UserModule } from '../user/user.module';
 
 @Module({
+  imports: [UserModule],
   controllers: [AuctionController],
   providers: [AuctionService, AuctionGateway, AuctionPersistenceService],
   exports: [AuctionService],
