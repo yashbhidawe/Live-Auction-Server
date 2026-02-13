@@ -200,4 +200,28 @@ describe('AuctionService backend correctness hardening', () => {
     const state = await service.getState(auctionId);
     expect(state?.items[0]?.highestBid).toBe(130);
   });
+
+  it('extends from remaining time instead of resetting full duration', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    try {
+      const auctionId = await createAndStartAuction();
+
+      const before = await service.getState(auctionId);
+      expect(before?.itemEndTime).toBeDefined();
+      const beforeEndTime = before?.itemEndTime as number;
+
+      // 45s elapsed on a 60s timer => 15s remaining.
+      jest.setSystemTime(new Date(Date.now() + 45_000));
+
+      const extend = await service.extendItem(auctionId, 'seller-1');
+      expect(extend.extended).toBe(true);
+
+      const after = await service.getState(auctionId);
+      expect(after?.itemEndTime).toBe(beforeEndTime + 15_000);
+      expect((after!.itemEndTime! - Date.now()) / 1000).toBe(30);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });

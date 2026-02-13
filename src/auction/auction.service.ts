@@ -137,7 +137,14 @@ export class AuctionService implements OnModuleInit {
 
   /** List all auctions from DB (includes ended) */
   async listAuctions(): Promise<
-    Array<{ id: string; sellerId: string; status: string }>
+    Array<{
+      id: string;
+      sellerId: string;
+      status: string;
+      sellerName: string;
+      firstItemName: string | null;
+      itemCount: number;
+    }>
   > {
     return this.persistence.listAuctions();
   }
@@ -343,6 +350,8 @@ export class AuctionService implements OnModuleInit {
   private scheduleItemExpiry(auctionId: string): void {
     const entry = this.auctions.get(auctionId);
     if (!entry) return;
+    const hadActiveTimer = entry.itemTimer != null;
+    const previousEndTimeMs = entry.itemEndTimeMs;
     if (entry.itemTimer) {
       clearTimeout(entry.itemTimer);
       entry.itemTimer = null;
@@ -351,11 +360,17 @@ export class AuctionService implements OnModuleInit {
     if (state.status !== 'LIVE') return;
     const item = state.items[state.currentItemIndex];
     if (!item || item.status !== 'LIVE') return;
+    const now = Date.now();
+    const baseDurationMs = item.durationSec * 1000;
+    const extensionMs = item.extended ? item.extraDurationSec * 1000 : 0;
+
+    // When extending an already-running timer, add extra time to remaining
+    // time rather than resetting the full item duration from "now".
     const durationMs =
-      (item.extended
-        ? item.durationSec + item.extraDurationSec
-        : item.durationSec) * 1000;
-    const endTimeMs = Date.now() + durationMs;
+      hadActiveTimer && previousEndTimeMs != null && item.extended
+        ? Math.max(0, previousEndTimeMs - now) + item.extraDurationSec * 1000
+        : baseDurationMs + extensionMs;
+    const endTimeMs = now + durationMs;
     entry.itemEndTimeMs = endTimeMs;
     entry.itemTimer = setTimeout(
       () => this.onItemTimerExpired(auctionId),

@@ -13,6 +13,8 @@ export interface AuctionSummary {
   status: string;
   createdAt: Date;
   sellerName: string;
+  firstItemName: string | null;
+  itemCount: number;
 }
 
 @Injectable()
@@ -236,6 +238,12 @@ export class AuctionPersistenceService {
         status: true,
         createdAt: true,
         seller: { select: { displayName: true } },
+        items: {
+          select: { name: true },
+          orderBy: { itemOrder: 'asc' },
+          take: 1,
+        },
+        _count: { select: { items: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -245,6 +253,8 @@ export class AuctionPersistenceService {
       status: a.status,
       createdAt: a.createdAt,
       sellerName: a.seller.displayName,
+      firstItemName: a.items[0]?.name ?? null,
+      itemCount: a._count.items,
     }));
   }
 
